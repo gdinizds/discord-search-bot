@@ -42,14 +42,17 @@ class SearchLayoutBuilderTest {
 
         Map<?, ?> prevBtn = (Map<?, ?>) buttons.get(0);
         assertThat(prevBtn.get("custom_id")).isEqualTo("search:prev:sess-123");
+        assertThat(prevBtn.get("label")).isEqualTo("◀ Anterior");
         assertThat(prevBtn.get("disabled")).isEqualTo(true);
 
         Map<?, ?> randBtn = (Map<?, ?>) buttons.get(1);
         assertThat(randBtn.get("custom_id")).isEqualTo("search:rand:sess-123");
+        assertThat(randBtn.get("label")).isEqualTo("🎲 Aleatório");
         assertThat(randBtn.get("disabled")).isEqualTo(false);
 
         Map<?, ?> nextBtn = (Map<?, ?>) buttons.get(2);
         assertThat(nextBtn.get("custom_id")).isEqualTo("search:next:sess-123");
+        assertThat(nextBtn.get("label")).isEqualTo("Próximo ▶");
         assertThat(nextBtn.get("disabled")).isEqualTo(false);
 
         Map<?, ?> linkBtn = (Map<?, ?>) buttons.get(3);

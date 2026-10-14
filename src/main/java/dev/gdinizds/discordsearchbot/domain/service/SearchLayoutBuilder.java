@@ -126,7 +126,7 @@ public class SearchLayoutBuilder {
                 "type", 2,
                 "style", "SECONDARY",
                 "custom_id", "search:prev:" + session.id(),
-                "label", "⬅️ Anterior",
+                "label", "◀ Anterior",
                 "disabled", !session.hasPrevious()
         ));
 
@@ -142,7 +142,7 @@ public class SearchLayoutBuilder {
                 "type", 2,
                 "style", "PRIMARY",
                 "custom_id", "search:next:" + session.id(),
-                "label", "Próximo ➡️",
+                "label", "Próximo ▶",
                 "disabled", !session.hasNext()
         ));
 

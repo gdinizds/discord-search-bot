@@ -155,6 +155,18 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
             }
 
             SearchSession session = sessionOpt.get();
+            if (session.userId() != null && !session.userId().equals(command.userId())) {
+                OutboundResponse forbidden = OutboundResponse.ephemeralReply(
+                        command.interactionToken(),
+                        command.correlationId(),
+                        "⚠️ Apenas quem executou o comando pode interagir com estes botões.",
+                        true
+                );
+                replyPublisher.publish(forbidden);
+                recordNavAudit(command, forbidden, "FORBIDDEN", "User " + command.userId() + " not authorized for session of user " + session.userId(), startTime);
+                return;
+            }
+
             int newIndex = switch (command.action()) {
                 case "next" -> session.nextIndex();
                 case "prev" -> session.previousIndex();

@@ -212,6 +212,32 @@ class SearchApplicationServiceTest {
     }
 
     @Test
+    void rejectsNavigationFromDifferentUserWithEphemeralMessage() {
+        SearchSession session = SearchSession.create(
+                "sess-auth", "corr-auth", "uOriginal", "g1", "ch1", "msg-1", "tok-1", "query", SearchType.WEB,
+                List.of(new HitItem("Hit 1", "https://hit1.com", "Snippet", null, null, "google", null, SearchType.WEB)),
+                Instant.now(), 3600
+        );
+        when(sessionPort.findById("sess-auth")).thenReturn(Optional.of(session));
+
+        NavigationCommand nav = new NavigationCommand(
+                "corr-forbid", "g1", "ch1", "uDifferent", "intruder", "tok-forbid", "msg-10", "next", "sess-auth", "{}"
+        );
+
+        service.navigate(nav);
+
+        var responseCaptor = ArgumentCaptor.forClass(OutboundResponse.class);
+        verify(replyPublisher).publish(responseCaptor.capture());
+        OutboundResponse response = responseCaptor.getValue();
+        assertThat(response.responseType()).isEqualTo("EPHEMERAL_REPLY");
+        assertThat(response.content()).contains("Apenas quem executou o comando pode interagir");
+
+        var auditCaptor = ArgumentCaptor.forClass(AuditLogEntry.class);
+        verify(auditLog).record(auditCaptor.capture());
+        assertThat(auditCaptor.getValue().status()).isEqualTo("FORBIDDEN");
+    }
+
+    @Test
     void fallsBackToStrictWhenUserLevelIsBelowScopeLimit() {
         when(safeSearchConfigPort.resolveScopeLimit("g1", "ch1")).thenReturn(1);
         when(searchEngine.searchWeb(eq("cats"), any(), eq(2), anyInt()))
