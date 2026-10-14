@@ -129,11 +129,12 @@ management:
   endpoint:
     health:
       show-details: always
+      validate-group-membership: false
       probes:
         enabled: true
       group:
         readiness:
-          include: readinessState, db, kafka
+          include: readinessState, db
   health:
     circuitbreakers:
       enabled: false
