@@ -27,6 +27,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -129,6 +130,14 @@ class SearchApplicationServiceTest {
         verify(sessionPort).save(sessionCaptor.capture());
         SearchSession saved = sessionCaptor.getValue();
         assertThat(saved.items().get(0).mediaUrl()).isEqualTo("https://garage.s3.local/capivara-1.jpg");
+
+        var responseCaptor = ArgumentCaptor.forClass(OutboundResponse.class);
+        verify(replyPublisher).publish(responseCaptor.capture());
+        OutboundResponse response = responseCaptor.getValue();
+        assertThat(response.attachments()).hasSize(1);
+        assertThat(response.attachments().get(0).url()).isEqualTo("https://garage.s3.local/capivara-1.jpg");
+        assertThat(response.attachments().get(0).name()).isEqualTo("capivara-1.jpg");
+        assertThat(response.embeds().get(0).get("image")).isEqualTo(Map.of("url", "attachment://capivara-1.jpg"));
     }
 
     @Test

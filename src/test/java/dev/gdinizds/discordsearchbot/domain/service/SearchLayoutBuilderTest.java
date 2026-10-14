@@ -57,9 +57,9 @@ class SearchLayoutBuilderTest {
     }
 
     @Test
-    void rendersImageSearchWithMediaUrl() {
+    void rendersImageSearchWithInternalS3MediaUrl() {
         List<HitItem> items = List.of(
-                new HitItem("Cat Picture", "https://origin.com/cat.html", "Cute cat", "https://origin.com/cat.jpg", "https://s3.local/cat.jpg", "qwant", "1920x1080", SearchType.IMAGE)
+                new HitItem("Cat Picture", "https://origin.com/cat.html", "Cute cat", "https://origin.com/cat.jpg", "http://garage.garage.svc.cluster.local:3900/bucket/cat.jpg", "qwant", "1920x1080", SearchType.IMAGE)
         );
 
         SearchSession session = SearchSession.create(
@@ -68,7 +68,26 @@ class SearchLayoutBuilderTest {
 
         var rendered = layoutBuilder.render(session, "guilherme");
         Map<String, Object> embed = rendered.embeds().get(0);
-        assertThat(embed.get("image")).isEqualTo(Map.of("url", "https://s3.local/cat.jpg"));
+        assertThat(embed.get("image")).isEqualTo(Map.of("url", "attachment://cat.jpg"));
+        assertThat(rendered.attachments()).hasSize(1);
+        assertThat(rendered.attachments().get(0).url()).isEqualTo("http://garage.garage.svc.cluster.local:3900/bucket/cat.jpg");
+        assertThat(rendered.attachments().get(0).name()).isEqualTo("cat.jpg");
+    }
+
+    @Test
+    void rendersImageSearchWithExternalMediaUrl() {
+        List<HitItem> items = List.of(
+                new HitItem("Dog Picture", "https://origin.com/dog.html", "Cute dog", "https://cdn.example.com/dog.jpg", "https://cdn.example.com/dog.jpg", "google", "1920x1080", SearchType.IMAGE)
+        );
+
+        SearchSession session = SearchSession.create(
+                "sess-dog", "corr-dog", "u1", "g1", "ch1", "m1", "tok1", "dog", SearchType.IMAGE, items, Instant.now(), 3600
+        );
+
+        var rendered = layoutBuilder.render(session, "guilherme");
+        Map<String, Object> embed = rendered.embeds().get(0);
+        assertThat(embed.get("image")).isEqualTo(Map.of("url", "https://cdn.example.com/dog.jpg"));
+        assertThat(rendered.attachments()).isEmpty();
     }
 
     @Test

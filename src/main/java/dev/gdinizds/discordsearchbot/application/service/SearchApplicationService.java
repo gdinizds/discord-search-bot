@@ -152,7 +152,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
             SearchSession updatedSession = session.withIndex(newIndex, clock.instant());
 
             if (updatedSession.searchType() == SearchType.IMAGE) {
-                ensureImageUploaded(command.guildId(), command.correlationId(), updatedSession);
+                updatedSession = ensureImageUploaded(command.guildId(), command.correlationId(), updatedSession);
             }
 
             SearchLayoutBuilder.RenderedMessage rendered = layoutBuilder.render(updatedSession, command.username());
@@ -163,7 +163,8 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                     command.correlationId(),
                     rendered.content(),
                     rendered.embeds(),
-                    rendered.components()
+                    rendered.components(),
+                    rendered.attachments()
             );
 
             replyPublisher.publish(response);
@@ -204,7 +205,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
         };
     }
 
-    private void ensureImageUploaded(String guildId, String correlationId, SearchSession session) {
+    private SearchSession ensureImageUploaded(String guildId, String correlationId, SearchSession session) {
         HitItem item = session.currentItem();
         if (item != null && (item.mediaUrl() == null || item.mediaUrl().equals(item.imageUrl()))) {
             String uploaded = imageStorage.storeImage(guildId, correlationId, item.imageUrl(), item.title());
@@ -239,8 +240,10 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                         session.expiresAt()
                 );
                 sessionPort.save(enriched);
+                return enriched;
             }
         }
+        return session;
     }
 
     private OutboundResponse buildInitialResponse(SearchCommand command, SearchLayoutBuilder.RenderedMessage rendered) {
@@ -251,6 +254,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                     rendered.content(),
                     rendered.embeds(),
                     rendered.components(),
+                    rendered.attachments(),
                     true
             );
         }
@@ -260,7 +264,8 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                 command.correlationId(),
                 rendered.content(),
                 rendered.embeds(),
-                rendered.components()
+                rendered.components(),
+                rendered.attachments()
         );
     }
 

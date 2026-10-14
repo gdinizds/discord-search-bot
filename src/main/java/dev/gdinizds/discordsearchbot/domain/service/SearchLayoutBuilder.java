@@ -1,6 +1,7 @@
 package dev.gdinizds.discordsearchbot.domain.service;
 
 import dev.gdinizds.discordsearchbot.domain.model.HitItem;
+import dev.gdinizds.discordsearchbot.domain.model.OutboundResponse;
 import dev.gdinizds.discordsearchbot.domain.model.SearchSession;
 import dev.gdinizds.discordsearchbot.domain.model.SearchType;
 
@@ -17,7 +18,8 @@ public class SearchLayoutBuilder {
     public record RenderedMessage(
             String content,
             List<Map<String, Object>> embeds,
-            List<Map<String, Object>> components
+            List<Map<String, Object>> components,
+            List<OutboundResponse.Attachment> attachments
     ) {
     }
 
@@ -33,8 +35,20 @@ public class SearchLayoutBuilder {
         embed.put("color", colorForType(session.searchType()));
         embed.put("description", formatDescription(item));
 
-        if (session.searchType() == SearchType.IMAGE && item.mediaUrl() != null && !item.mediaUrl().isBlank()) {
-            embed.put("image", Map.of("url", item.mediaUrl()));
+        List<OutboundResponse.Attachment> attachments = new ArrayList<>();
+        if (session.searchType() == SearchType.IMAGE) {
+            String targetUrl = (item.mediaUrl() != null && !item.mediaUrl().isBlank())
+                    ? item.mediaUrl()
+                    : item.imageUrl();
+            if (targetUrl != null && !targetUrl.isBlank()) {
+                if (isInternalAttachment(targetUrl)) {
+                    String filename = extractFilename(targetUrl);
+                    attachments.add(new OutboundResponse.Attachment(targetUrl, filename, item.title()));
+                    embed.put("image", Map.of("url", "attachment://" + filename));
+                } else {
+                    embed.put("image", Map.of("url", targetUrl));
+                }
+            }
         } else if (item.imageUrl() != null && !item.imageUrl().isBlank()) {
             embed.put("thumbnail", Map.of("url", item.imageUrl()));
         }
@@ -64,7 +78,7 @@ public class SearchLayoutBuilder {
 
         List<Map<String, Object>> components = buildComponents(session, item);
 
-        return new RenderedMessage(null, List.of(embed), components);
+        return new RenderedMessage(null, List.of(embed), components, attachments);
     }
 
     public RenderedMessage renderEmpty(String query, SearchType type) {
@@ -72,7 +86,7 @@ public class SearchLayoutBuilder {
         embed.put("title", "🔍 Nenhum resultado encontrado");
         embed.put("description", "Não foram encontrados resultados para o termo **" + query + "** na categoria **" + categoryLabel(type) + "**.");
         embed.put("color", 0xED4245);
-        return new RenderedMessage(null, List.of(embed), List.of());
+        return new RenderedMessage(null, List.of(embed), List.of(), List.of());
     }
 
     public RenderedMessage renderError(String errorMessage) {
@@ -80,7 +94,29 @@ public class SearchLayoutBuilder {
         embed.put("title", "⚠️ Falha ao executar pesquisa");
         embed.put("description", errorMessage != null && !errorMessage.isBlank() ? errorMessage : "Ocorreu um erro ao consultar o motor de busca.");
         embed.put("color", 0xED4245);
-        return new RenderedMessage(null, List.of(embed), List.of());
+        return new RenderedMessage(null, List.of(embed), List.of(), List.of());
+    }
+
+    static boolean isInternalAttachment(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase();
+        return lower.contains(".cluster.local")
+                || lower.contains("garage")
+                || lower.contains("localhost")
+                || lower.contains("127.0.0.1")
+                || lower.contains("/discord-gateway-attachments/");
+    }
+
+    static String extractFilename(String url) {
+        if (url == null || url.isBlank()) return "search-image.jpg";
+        int lastSlash = url.lastIndexOf('/');
+        if (lastSlash >= 0 && lastSlash < url.length() - 1) {
+            String name = url.substring(lastSlash + 1);
+            int q = name.indexOf('?');
+            if (q > 0) name = name.substring(0, q);
+            if (name.contains(".")) return name;
+        }
+        return "search-image.jpg";
     }
 
     private List<Map<String, Object>> buildComponents(SearchSession session, HitItem currentItem) {

@@ -8,6 +8,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import tools.jackson.databind.ObjectMapper;
 
+import java.util.List;
+
 public class GatewayResponsePublisher implements ReplyPublisherPort {
 
     private static final Logger log = LoggerFactory.getLogger(GatewayResponsePublisher.class);
@@ -27,6 +29,13 @@ public class GatewayResponsePublisher implements ReplyPublisherPort {
     @Override
     public void publish(OutboundResponse response) {
         try {
+            List<GatewayResponse.Attachment> attachments = null;
+            if (response.attachments() != null && !response.attachments().isEmpty()) {
+                attachments = response.attachments().stream()
+                        .map(a -> new GatewayResponse.Attachment(a.url(), a.name(), a.description()))
+                        .toList();
+            }
+
             GatewayResponse gatewayPayload = new GatewayResponse(
                     response.responseType(),
                     response.interactionToken(),
@@ -35,7 +44,7 @@ public class GatewayResponsePublisher implements ReplyPublisherPort {
                     response.correlationId(),
                     response.content(),
                     response.embeds(),
-                    null,
+                    attachments,
                     response.finished(),
                     response.components()
             );
