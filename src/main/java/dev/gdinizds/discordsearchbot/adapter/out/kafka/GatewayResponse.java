@@ -40,7 +40,7 @@ public record GatewayResponse(
 
     public static GatewayResponse updateMessage(String interactionToken, String channelId, String originMessageId, String correlationId,
                                                 String content, List<Map<String, Object>> embeds, List<Map<String, Object>> components) {
-        return new GatewayResponse("UPDATE_MESSAGE", interactionToken, originMessageId, channelId, correlationId, content, embeds, null, null, components);
+        return new GatewayResponse("UPDATE_MESSAGE", interactionToken, originMessageId, channelId, correlationId, content, embeds, null, true, components);
     }
 
     public static GatewayResponse channelReply(String channelId, String originMessageId, String correlationId,

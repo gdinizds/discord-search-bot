@@ -21,7 +21,7 @@ public record OutboundResponse(
 
     public static OutboundResponse updateMessage(String interactionToken, String channelId, String originMessageId, String correlationId,
                                                  String content, List<Map<String, Object>> embeds, List<Map<String, Object>> components) {
-        return new OutboundResponse("UPDATE_MESSAGE", interactionToken, originMessageId, channelId, correlationId, content, embeds, components, null);
+        return new OutboundResponse("UPDATE_MESSAGE", interactionToken, originMessageId, channelId, correlationId, content, embeds, components, true);
     }
 
     public static OutboundResponse channelReply(String channelId, String originMessageId, String correlationId,
