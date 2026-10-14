@@ -17,6 +17,7 @@ public record SearchBotProperties(
             @DefaultValue("discord.events.interaction.command") String inboundInteractions,
             @DefaultValue("discord.events.message.command") String inboundCommands,
             @DefaultValue("discord.events.interaction.button") String inboundButtons,
+            @DefaultValue("discord.events.config.updated") String inboundConfigUpdated,
             @DefaultValue("discord.gateway.responses") String outboundResponses,
             @DefaultValue("discord.gateway.commands") String gatewayCommands
     ) {}

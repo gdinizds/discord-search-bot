@@ -48,6 +48,7 @@ search-bot:
     inbound-interactions: discord.events.interaction.command
     inbound-commands: discord.events.message.command
     inbound-buttons: discord.events.interaction.button
+    inbound-config-updated: discord.events.config.updated
     outbound-responses: discord.gateway.responses
     gateway-commands: discord.gateway.commands
   searxng:

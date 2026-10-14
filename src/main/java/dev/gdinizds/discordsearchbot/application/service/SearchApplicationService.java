@@ -7,6 +7,7 @@ import dev.gdinizds.discordsearchbot.application.port.out.ImageStoragePort;
 import dev.gdinizds.discordsearchbot.application.port.out.ReplyPublisherPort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchEnginePort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchSessionPort;
+import dev.gdinizds.discordsearchbot.application.port.out.SafeSearchConfigPort;
 import dev.gdinizds.discordsearchbot.domain.model.AuditLogEntry;
 import dev.gdinizds.discordsearchbot.domain.model.HitItem;
 import dev.gdinizds.discordsearchbot.domain.model.ImageHit;
@@ -39,6 +40,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
     private final SearchSessionPort sessionPort;
     private final ReplyPublisherPort replyPublisher;
     private final AuditLogPort auditLog;
+    private final SafeSearchConfigPort safeSearchConfigPort;
     private final SearchLayoutBuilder layoutBuilder;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -48,6 +50,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                                     SearchSessionPort sessionPort,
                                     ReplyPublisherPort replyPublisher,
                                     AuditLogPort auditLog,
+                                    SafeSearchConfigPort safeSearchConfigPort,
                                     SearchLayoutBuilder layoutBuilder,
                                     ObjectMapper objectMapper,
                                     Clock clock) {
@@ -56,6 +59,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
         this.sessionPort = sessionPort;
         this.replyPublisher = replyPublisher;
         this.auditLog = auditLog;
+        this.safeSearchConfigPort = safeSearchConfigPort;
         this.layoutBuilder = layoutBuilder;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -70,8 +74,18 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
             return;
         }
 
+        int scopeLimit = safeSearchConfigPort.resolveScopeLimit(command.guildId(), command.channelId());
+        int effectiveSafeSearch;
+        if (command.safeSearch() == null) {
+            effectiveSafeSearch = Math.max(scopeLimit, 1);
+        } else if (command.safeSearch() < scopeLimit) {
+            effectiveSafeSearch = 2;
+        } else {
+            effectiveSafeSearch = Math.max(0, Math.min(2, command.safeSearch()));
+        }
+
         try {
-            SearchFilter filter = SearchFilter.of(query, command.searchType(), command.language(), command.safeSearch(), 10);
+            SearchFilter filter = SearchFilter.of(query, command.searchType(), command.language(), effectiveSafeSearch, 10);
             List<HitItem> items = fetchItems(command.guildId(), command.correlationId(), filter);
 
             Instant now = clock.instant();

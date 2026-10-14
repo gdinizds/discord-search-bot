@@ -2,6 +2,7 @@ package dev.gdinizds.discordsearchbot.adapter.in.kafka;
 
 import dev.gdinizds.discordsearchbot.application.port.in.ExecuteSearchUseCase;
 import dev.gdinizds.discordsearchbot.application.port.in.NavigateSearchUseCase;
+import dev.gdinizds.discordsearchbot.application.port.out.SafeSearchConfigPort;
 import dev.gdinizds.discordsearchbot.domain.model.NavigationCommand;
 import dev.gdinizds.discordsearchbot.domain.model.SearchCommand;
 import io.github.resilience4j.bulkhead.Bulkhead;
@@ -29,6 +30,7 @@ public class InboundEventConsumer implements DisposableBean {
     private final InboundEventMapper mapper;
     private final ExecuteSearchUseCase searchUseCase;
     private final NavigateSearchUseCase navigateUseCase;
+    private final SafeSearchConfigPort safeSearchConfigPort;
     private final Bulkhead bulkhead;
     private final ExecutorService executor;
     private final AtomicInteger inFlight = new AtomicInteger();
@@ -39,12 +41,14 @@ public class InboundEventConsumer implements DisposableBean {
                                 InboundEventMapper mapper,
                                 ExecuteSearchUseCase searchUseCase,
                                 NavigateSearchUseCase navigateUseCase,
+                                SafeSearchConfigPort safeSearchConfigPort,
                                 Bulkhead bulkhead,
                                 @Qualifier("searchExecutor") ExecutorService executor) {
         this.objectMapper = objectMapper;
         this.mapper = mapper;
         this.searchUseCase = searchUseCase;
         this.navigateUseCase = navigateUseCase;
+        this.safeSearchConfigPort = safeSearchConfigPort;
         this.bulkhead = bulkhead;
         this.executor = executor;
     }
@@ -84,6 +88,35 @@ public class InboundEventConsumer implements DisposableBean {
             NavigationCommand command = mapper.fromButton(event, payload);
             dispatch(() -> withMdc(command.correlationId(), command.guildId(), "BUTTON", () -> navigateUseCase.navigate(command)));
         });
+    }
+
+    @KafkaListener(topics = "${search-bot.topics.inbound-config-updated}", containerFactory = "kafkaListenerContainerFactory")
+    public void onConfigUpdated(@Payload String payload) {
+        try {
+            tools.jackson.databind.JsonNode root = objectMapper.readTree(payload);
+            String eventType = root.path("eventType").asString("");
+            if (!"CONFIG_UPDATED".equalsIgnoreCase(eventType)) return;
+
+            String settingKey = root.path("settingKey").asString("");
+            if (!settingKey.startsWith("safesearch")) return;
+
+            String guildId = root.path("guildId").asString(null);
+            if (guildId == null || guildId.isBlank()) return;
+
+            String channelId = root.path("channelId").asString(null);
+            tools.jackson.databind.JsonNode levelNode = root.path("level");
+            int level;
+            if (levelNode.isNumber()) {
+                level = levelNode.intValue();
+            } else {
+                level = Integer.parseInt(root.path("newValue").asString("2"));
+            }
+
+            safeSearchConfigPort.save(guildId, channelId, level);
+            log.info("Updated SafeSearch configuration [guild={}, channel={}, level={}]", guildId, channelId, level);
+        } catch (Exception e) {
+            log.warn("Failed to process config updated event: {}", e.getMessage());
+        }
     }
 
     private void dispatch(Runnable task) {

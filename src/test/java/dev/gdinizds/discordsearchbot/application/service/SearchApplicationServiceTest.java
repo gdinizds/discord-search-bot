@@ -5,6 +5,7 @@ import dev.gdinizds.discordsearchbot.application.port.out.ImageStoragePort;
 import dev.gdinizds.discordsearchbot.application.port.out.ReplyPublisherPort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchEnginePort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchSessionPort;
+import dev.gdinizds.discordsearchbot.application.port.out.SafeSearchConfigPort;
 import dev.gdinizds.discordsearchbot.domain.model.AuditLogEntry;
 import dev.gdinizds.discordsearchbot.domain.model.HitItem;
 import dev.gdinizds.discordsearchbot.domain.model.ImageHit;
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import tools.jackson.databind.ObjectMapper;
 
@@ -56,6 +58,9 @@ class SearchApplicationServiceTest {
     @Mock
     private AuditLogPort auditLog;
 
+    @Mock
+    private SafeSearchConfigPort safeSearchConfigPort;
+
     private final SearchLayoutBuilder layoutBuilder = new SearchLayoutBuilder();
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final Clock clock = Clock.fixed(Instant.parse("2026-10-14T10:00:00Z"), ZoneOffset.UTC);
@@ -70,10 +75,12 @@ class SearchApplicationServiceTest {
                 sessionPort,
                 replyPublisher,
                 auditLog,
+                safeSearchConfigPort,
                 layoutBuilder,
                 objectMapper,
                 clock
         );
+        Mockito.lenient().when(safeSearchConfigPort.resolveScopeLimit(any(), any())).thenReturn(1);
     }
 
     @Test
@@ -202,5 +209,53 @@ class SearchApplicationServiceTest {
         var auditCaptor = ArgumentCaptor.forClass(AuditLogEntry.class);
         verify(auditLog).record(auditCaptor.capture());
         assertThat(auditCaptor.getValue().status()).isEqualTo("EXPIRED");
+    }
+
+    @Test
+    void fallsBackToStrictWhenUserLevelIsBelowScopeLimit() {
+        when(safeSearchConfigPort.resolveScopeLimit("g1", "ch1")).thenReturn(1);
+        when(searchEngine.searchWeb(eq("cats"), any(), eq(2), anyInt()))
+                .thenReturn(List.of(new SearchHit("Safe Cats", "https://example.com/cats", "Strict filtered", "google")));
+
+        SearchCommand command = new SearchCommand(
+                "corr-sec-1", "g1", "ch1", "u1", "user", "tok", null,
+                "cats", SearchType.WEB, "pt-BR", 0, true, "{}"
+        );
+
+        service.execute(command);
+
+        verify(searchEngine).searchWeb(eq("cats"), any(), eq(2), anyInt());
+    }
+
+    @Test
+    void allowsSafeSearchWhenEqualOrHigherThanScopeLimit() {
+        when(safeSearchConfigPort.resolveScopeLimit("g1", "ch1")).thenReturn(1);
+        when(searchEngine.searchWeb(eq("dogs"), any(), eq(1), anyInt()))
+                .thenReturn(List.of(new SearchHit("Dogs", "https://example.com/dogs", "Moderate dogs", "google")));
+
+        SearchCommand command = new SearchCommand(
+                "corr-sec-2", "g1", "ch1", "u1", "user", "tok", null,
+                "dogs", SearchType.WEB, "pt-BR", 1, true, "{}"
+        );
+
+        service.execute(command);
+
+        verify(searchEngine).searchWeb(eq("dogs"), any(), eq(1), anyInt());
+    }
+
+    @Test
+    void usesScopeLimitWhenUserDoesNotSpecifySafeSearch() {
+        when(safeSearchConfigPort.resolveScopeLimit("g1", "ch1")).thenReturn(2);
+        when(searchEngine.searchWeb(eq("strict query"), any(), eq(2), anyInt()))
+                .thenReturn(List.of(new SearchHit("Strict Hit", "https://example.com/hit", "Strict text", "google")));
+
+        SearchCommand command = new SearchCommand(
+                "corr-sec-3", "g1", "ch1", "u1", "user", "tok", null,
+                "strict query", SearchType.WEB, "pt-BR", null, true, "{}"
+        );
+
+        service.execute(command);
+
+        verify(searchEngine).searchWeb(eq("strict query"), any(), eq(2), anyInt());
     }
 }

@@ -4,6 +4,7 @@ import dev.gdinizds.discordsearchbot.adapter.in.kafka.InboundEventConsumer;
 import dev.gdinizds.discordsearchbot.adapter.in.kafka.InboundEventMapper;
 import dev.gdinizds.discordsearchbot.adapter.out.kafka.GatewayResponsePublisher;
 import dev.gdinizds.discordsearchbot.adapter.out.persistence.JdbcAuditLogAdapter;
+import dev.gdinizds.discordsearchbot.adapter.out.persistence.JdbcSafeSearchConfigAdapter;
 import dev.gdinizds.discordsearchbot.adapter.out.persistence.JdbcSearchSessionAdapter;
 import dev.gdinizds.discordsearchbot.adapter.out.s3.S3ImageStore;
 import dev.gdinizds.discordsearchbot.adapter.out.s3.SafeImageDownloader;
@@ -13,6 +14,7 @@ import dev.gdinizds.discordsearchbot.application.port.in.NavigateSearchUseCase;
 import dev.gdinizds.discordsearchbot.application.port.out.AuditLogPort;
 import dev.gdinizds.discordsearchbot.application.port.out.ImageStoragePort;
 import dev.gdinizds.discordsearchbot.application.port.out.ReplyPublisherPort;
+import dev.gdinizds.discordsearchbot.application.port.out.SafeSearchConfigPort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchEnginePort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchSessionPort;
 import dev.gdinizds.discordsearchbot.application.service.SearchApplicationService;
@@ -92,16 +94,22 @@ public class ApplicationConfig {
     }
 
     @Bean
+    public SafeSearchConfigPort safeSearchConfigPort(JdbcClient jdbc, Resilience resilience) {
+        return new JdbcSafeSearchConfigAdapter(jdbc, resilience);
+    }
+
+    @Bean
     public SearchApplicationService searchApplicationService(SearchEnginePort searchEngine,
                                                              ImageStoragePort imageStorage,
                                                              SearchSessionPort sessionPort,
                                                              ReplyPublisherPort replyPublisher,
                                                              AuditLogPort auditLog,
+                                                             SafeSearchConfigPort safeSearchConfigPort,
                                                              SearchLayoutBuilder layoutBuilder,
                                                              ObjectMapper objectMapper,
                                                              Clock clock) {
         return new SearchApplicationService(searchEngine, imageStorage, sessionPort, replyPublisher,
-                auditLog, layoutBuilder, objectMapper, clock);
+                auditLog, safeSearchConfigPort, layoutBuilder, objectMapper, clock);
     }
 
     @Bean
@@ -109,11 +117,12 @@ public class ApplicationConfig {
                                                      InboundEventMapper mapper,
                                                      ExecuteSearchUseCase searchUseCase,
                                                      NavigateSearchUseCase navigateUseCase,
+                                                     SafeSearchConfigPort safeSearchConfigPort,
                                                      Bulkhead searchBulkhead,
                                                      @Qualifier("searchExecutor") ExecutorService executor,
                                                      SearchBotProperties properties) {
         var consumer = new InboundEventConsumer(objectMapper, mapper, searchUseCase, navigateUseCase,
-                searchBulkhead, executor);
+                safeSearchConfigPort, searchBulkhead, executor);
         consumer.setDrainTimeout(properties.executor().drainTimeout());
         return consumer;
     }
