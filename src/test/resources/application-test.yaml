@@ -1,0 +1,32 @@
+spring:
+  application:
+    name: discord-search-bot-test
+  datasource:
+    url: jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  flyway:
+    enabled: false
+  kafka:
+    bootstrap-servers: localhost:9092
+
+search-bot:
+  topics:
+    inbound-interactions: test.discord.events.interaction.command
+    inbound-commands: test.discord.events.message.command
+    inbound-buttons: test.discord.events.interaction.button
+    outbound-responses: test.discord.gateway.responses
+    gateway-commands: test.discord.gateway.commands
+  searxng:
+    url: http://localhost:8089
+    timeout: 2s
+    default-language: pt-BR
+    default-limit: 10
+  s3:
+    endpoint: http://localhost:3900
+    bucket: test-bucket
+    access-key: test-access
+    secret-key: test-secret
+    region: garage
+    key-prefix: test-search
