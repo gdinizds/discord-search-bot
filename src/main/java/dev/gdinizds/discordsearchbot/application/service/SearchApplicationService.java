@@ -8,6 +8,7 @@ import dev.gdinizds.discordsearchbot.application.port.out.ReplyPublisherPort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchEnginePort;
 import dev.gdinizds.discordsearchbot.application.port.out.SearchSessionPort;
 import dev.gdinizds.discordsearchbot.application.port.out.SafeSearchConfigPort;
+import dev.gdinizds.discordsearchbot.application.port.out.SearchMetricsPort;
 import dev.gdinizds.discordsearchbot.domain.model.AuditLogEntry;
 import dev.gdinizds.discordsearchbot.domain.model.HitItem;
 import dev.gdinizds.discordsearchbot.domain.model.ImageHit;
@@ -24,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -41,6 +43,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
     private final ReplyPublisherPort replyPublisher;
     private final AuditLogPort auditLog;
     private final SafeSearchConfigPort safeSearchConfigPort;
+    private final SearchMetricsPort metricsPort;
     private final SearchLayoutBuilder layoutBuilder;
     private final ObjectMapper objectMapper;
     private final Clock clock;
@@ -54,12 +57,27 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                                     SearchLayoutBuilder layoutBuilder,
                                     ObjectMapper objectMapper,
                                     Clock clock) {
+        this(searchEngine, imageStorage, sessionPort, replyPublisher, auditLog, safeSearchConfigPort,
+                SearchMetricsPort.NOOP, layoutBuilder, objectMapper, clock);
+    }
+
+    public SearchApplicationService(SearchEnginePort searchEngine,
+                                    ImageStoragePort imageStorage,
+                                    SearchSessionPort sessionPort,
+                                    ReplyPublisherPort replyPublisher,
+                                    AuditLogPort auditLog,
+                                    SafeSearchConfigPort safeSearchConfigPort,
+                                    SearchMetricsPort metricsPort,
+                                    SearchLayoutBuilder layoutBuilder,
+                                    ObjectMapper objectMapper,
+                                    Clock clock) {
         this.searchEngine = searchEngine;
         this.imageStorage = imageStorage;
         this.sessionPort = sessionPort;
         this.replyPublisher = replyPublisher;
         this.auditLog = auditLog;
         this.safeSearchConfigPort = safeSearchConfigPort;
+        this.metricsPort = metricsPort != null ? metricsPort : SearchMetricsPort.NOOP;
         this.layoutBuilder = layoutBuilder;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -84,8 +102,10 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
             effectiveSafeSearch = Math.max(0, Math.min(2, command.safeSearch()));
         }
 
+        String searchTypeStr = command.searchType() != null ? command.searchType().name() : "WEB";
         try {
             SearchFilter filter = SearchFilter.of(query, command.searchType(), command.language(), effectiveSafeSearch, 10);
+            searchTypeStr = filter.type().name();
             List<HitItem> items = fetchItems(command.guildId(), command.correlationId(), filter);
 
             Instant now = clock.instant();
@@ -94,6 +114,8 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                 OutboundResponse response = buildInitialResponse(command, rendered);
                 replyPublisher.publish(response);
                 recordAudit(command, response, "EMPTY", null, startTime);
+                metricsPort.recordRequest(searchTypeStr, "empty");
+                metricsPort.recordLatency(searchTypeStr, Duration.ofMillis(System.currentTimeMillis() - startTime));
                 return;
             }
 
@@ -118,6 +140,8 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
             OutboundResponse response = buildInitialResponse(command, rendered);
             replyPublisher.publish(response);
             recordAudit(command, response, "SUCCESS", null, startTime);
+            metricsPort.recordRequest(searchTypeStr, "success");
+            metricsPort.recordLatency(searchTypeStr, Duration.ofMillis(System.currentTimeMillis() - startTime));
         } catch (Exception e) {
             log.error("Search execution failed [query={}, type={}]: {}", query, command.searchType(), e.getMessage(), e);
             SearchLayoutBuilder.RenderedMessage rendered = layoutBuilder.renderError(e.getMessage());
@@ -128,6 +152,8 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                 log.warn("Failed to publish error response: {}", pubErr.getMessage());
             }
             recordAudit(command, response, "ERROR", e.getMessage(), startTime);
+            metricsPort.recordRequest(searchTypeStr, "error");
+            metricsPort.recordLatency(searchTypeStr, Duration.ofMillis(System.currentTimeMillis() - startTime));
         }
     }
 
@@ -137,6 +163,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
         String sessionId = command.sessionId();
         if (sessionId == null || sessionId.isBlank()) {
             log.warn("Navigation command missing sessionId");
+            metricsPort.recordNavigationClick(command.action(), "invalid");
             return;
         }
 
@@ -151,6 +178,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                 );
                 replyPublisher.publish(expired);
                 recordNavAudit(command, expired, "EXPIRED", "Session expired or not found", startTime);
+                metricsPort.recordNavigationClick(command.action(), "expired");
                 return;
             }
 
@@ -164,6 +192,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
                 );
                 replyPublisher.publish(forbidden);
                 recordNavAudit(command, forbidden, "FORBIDDEN", "User " + command.userId() + " not authorized for session of user " + session.userId(), startTime);
+                metricsPort.recordNavigationClick(command.action(), "forbidden");
                 return;
             }
 
@@ -195,9 +224,11 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
 
             replyPublisher.publish(response);
             recordNavAudit(command, response, "SUCCESS", null, startTime);
+            metricsPort.recordNavigationClick(command.action(), "success");
         } catch (Exception e) {
             log.error("Navigation failed for session {}: {}", sessionId, e.getMessage(), e);
             recordNavAudit(command, null, "ERROR", e.getMessage(), startTime);
+            metricsPort.recordNavigationClick(command.action(), "error");
         }
     }
 
@@ -205,12 +236,16 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
         return switch (filter.type()) {
             case IMAGE -> {
                 List<ImageHit> hits = searchEngine.searchImages(filter.query(), filter.language(), filter.safeSearch(), filter.limit());
+                metricsPort.recordSearxngQuery("images", "success");
                 List<HitItem> items = new ArrayList<>();
                 for (int i = 0; i < hits.size(); i++) {
                     ImageHit hit = hits.get(i);
                     String s3Url = null;
                     if (i == 0) {
                         s3Url = imageStorage.storeImage(guildId, correlationId, hit.imageUrl(), hit.title());
+                        if (s3Url != null && !s3Url.equals(hit.imageUrl())) {
+                            metricsPort.recordImageStored("success");
+                        }
                     }
                     items.add(HitItem.fromImageHit(hit, s3Url));
                 }
@@ -218,14 +253,17 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
             }
             case FILE -> {
                 List<SearchHit> hits = searchEngine.searchFiles(filter.query(), filter.language(), filter.safeSearch(), filter.limit());
+                metricsPort.recordSearxngQuery("files", "success");
                 yield hits.stream().map(h -> HitItem.fromSearchHit(h, SearchType.FILE)).toList();
             }
             case NEWS -> {
                 List<SearchHit> hits = searchEngine.searchNews(filter.query(), filter.language(), filter.safeSearch(), filter.limit());
+                metricsPort.recordSearxngQuery("news", "success");
                 yield hits.stream().map(h -> HitItem.fromSearchHit(h, SearchType.NEWS)).toList();
             }
             default -> {
                 List<SearchHit> hits = searchEngine.searchWeb(filter.query(), filter.language(), filter.safeSearch(), filter.limit());
+                metricsPort.recordSearxngQuery("general", "success");
                 yield hits.stream().map(h -> HitItem.fromSearchHit(h, SearchType.WEB)).toList();
             }
         };
@@ -236,6 +274,7 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
         if (item != null && (item.mediaUrl() == null || item.mediaUrl().equals(item.imageUrl()))) {
             String uploaded = imageStorage.storeImage(guildId, correlationId, item.imageUrl(), item.title());
             if (uploaded != null && !uploaded.equals(item.imageUrl())) {
+                metricsPort.recordImageStored("success");
                 HitItem updatedItem = new HitItem(
                         item.title(),
                         item.url(),
@@ -300,6 +339,8 @@ public class SearchApplicationService implements ExecuteSearchUseCase, NavigateS
         OutboundResponse response = buildInitialResponse(command, rendered);
         replyPublisher.publish(response);
         recordAudit(command, response, "INVALID_INPUT", "Query is empty", startTime);
+        metricsPort.recordRequest(command.searchType() != null ? command.searchType().name() : "WEB", "empty");
+        metricsPort.recordLatency(command.searchType() != null ? command.searchType().name() : "WEB", Duration.ofMillis(System.currentTimeMillis() - startTime));
     }
 
     private void recordAudit(SearchCommand command, OutboundResponse response, String status, String errorMessage, long startTime) {
