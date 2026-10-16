@@ -2,11 +2,9 @@ package dev.gdinizds.discordsearchbot.adapter.out.metrics;
 
 import dev.gdinizds.discordsearchbot.application.port.out.SearchMetricsPort;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
-@Component
 public class MicrometerMetrics implements SearchMetricsPort {
 
     private final MeterRegistry registry;
