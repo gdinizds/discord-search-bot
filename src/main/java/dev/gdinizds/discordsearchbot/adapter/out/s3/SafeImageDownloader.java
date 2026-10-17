@@ -77,28 +77,64 @@ public class SafeImageDownloader {
                 || address.isSiteLocalAddress() || address.isMulticastAddress()) {
             return false;
         }
-        byte[] b = address.getAddress();
-        if (address instanceof Inet4Address) {
-            int first = b[0] & 0xff;
-            int second = b[1] & 0xff;
-            if (first == 0 || first >= 224) return false;
-            if (first == 100 && second >= 64 && second <= 127) return false;
-            if (first == 192 && second == 0 && (b[2] & 0xff) == 0) return false;
-            if (first == 198 && (second == 18 || second == 19)) return false;
+
+        if (address instanceof Inet6Address) {
+            byte[] b = address.getAddress();
+            // Check IPv4-compatible or IPv4-mapped (::x.x.x.x or ::ffff:x.x.x.x)
+            boolean leadingZeros = true;
+            for (int i = 0; i < 10; i++) {
+                if (b[i] != 0) {
+                    leadingZeros = false;
+                    break;
+                }
+            }
+            if (leadingZeros && (b[10] == 0 || (b[10] & 0xff) == 0xff) && (b[11] == 0 || (b[11] & 0xff) == 0xff)) {
+                try {
+                    byte[] ipv4 = new byte[]{b[12], b[13], b[14], b[15]};
+                    return isPublicAddress(InetAddress.getByAddress(ipv4));
+                } catch (UnknownHostException e) {
+                    return false;
+                }
+            }
+            // Unique Local (fc00::/7)
+            if ((b[0] & 0xfe) == 0xfc) return false;
+            // Documentation prefix (2001:db8::/32)
+            if ((b[0] & 0xff) == 0x20 && (b[1] & 0xff) == 0x01 && (b[2] & 0xff) == 0x0d && (b[3] & 0xff) == 0xb8) return false;
+            // Discard prefix (100::/64)
+            if ((b[0] & 0xff) == 0x01 && (b[1] & 0xff) == 0x00) return false;
             return true;
         }
-        if (address instanceof Inet6Address) {
-            return (b[0] & 0xfe) != 0xfc;
-        }
-        return false;
+
+        byte[] b = address.getAddress();
+        int first = b[0] & 0xff;
+        int second = b[1] & 0xff;
+        if (first == 0 || first >= 224) return false;
+        if (first == 100 && second >= 64 && second <= 127) return false; // CGNAT
+        if (first == 192 && second == 0 && (b[2] & 0xff) == 0) return false; // 192.0.0.0/24
+        if (first == 192 && second == 0 && (b[2] & 0xff) == 2) return false; // TEST-NET-1 (192.0.2.0/24)
+        if (first == 198 && (second == 18 || second == 19)) return false; // Benchmarking
+        if (first == 198 && second == 51 && (b[2] & 0xff) == 100) return false; // TEST-NET-2 (198.51.100.0/24)
+        if (first == 203 && second == 0 && (b[2] & 0xff) == 113) return false; // TEST-NET-3 (203.0.113.0/24)
+        return true;
     }
 
     private void checkDestination(URI uri) {
+        String host = uri.getHost().toLowerCase(Locale.ROOT);
+        if (host.equals("localhost") || host.endsWith(".localhost")
+                || host.endsWith(".local") || host.endsWith(".internal")
+                || host.endsWith(".cluster.local") || host.endsWith(".consul")
+                || host.endsWith(".arpa")) {
+            throw new ImageRejectedException("internal host not allowed");
+        }
+
         InetAddress[] addresses;
         try {
             addresses = InetAddress.getAllByName(uri.getHost());
         } catch (UnknownHostException e) {
             throw new ImageRejectedException("unknown host");
+        }
+        if (addresses == null || addresses.length == 0) {
+            throw new ImageRejectedException("no address found for host");
         }
         for (InetAddress address : addresses) {
             if (!addressAllowed.test(address)) {

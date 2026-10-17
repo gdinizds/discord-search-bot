@@ -26,9 +26,13 @@ public class JdbcSafeSearchConfigAdapter implements SafeSearchConfigPort {
             WHERE guild_id = :guildId AND channel_id = :channelId
             """;
 
+    private record CacheEntry(int level, long expiresAtMs) {}
+    private static final long CACHE_TTL_MS = 300_000; // 5 minutes
+    private static final int MAX_CACHE_SIZE = 2_000;
+
     private final JdbcClient jdbc;
     private final Resilience resilience;
-    private final ConcurrentHashMap<String, Integer> cache = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CacheEntry> cache = new ConcurrentHashMap<>();
 
     public JdbcSafeSearchConfigAdapter(JdbcClient jdbc, Resilience resilience) {
         this.jdbc = jdbc;
@@ -38,7 +42,7 @@ public class JdbcSafeSearchConfigAdapter implements SafeSearchConfigPort {
     @Override
     public void save(String guildId, String channelId, int level) {
         String safeChannelId = channelId != null ? channelId.trim() : "";
-        cache.put(key(guildId, safeChannelId), level);
+        putCached(key(guildId, safeChannelId), level);
         try {
             resilience.run("database", () -> jdbc.sql(UPSERT)
                     .param("guildId", guildId)
@@ -57,9 +61,10 @@ public class JdbcSafeSearchConfigAdapter implements SafeSearchConfigPort {
         }
         String safeChannelId = channelId != null ? channelId.trim() : "";
         String k = key(guildId, safeChannelId);
-        Integer cached = cache.get(k);
-        if (cached != null) {
-            return Optional.of(cached);
+        CacheEntry entry = cache.get(k);
+        long now = System.currentTimeMillis();
+        if (entry != null && entry.expiresAtMs() > now) {
+            return Optional.of(entry.level());
         }
         try {
             Optional<Integer> dbResult = resilience.call("database", () -> jdbc.sql(FIND)
@@ -67,12 +72,23 @@ public class JdbcSafeSearchConfigAdapter implements SafeSearchConfigPort {
                     .param("channelId", safeChannelId)
                     .query(Integer.class)
                     .optional());
-            dbResult.ifPresent(lvl -> cache.put(k, lvl));
+            dbResult.ifPresent(lvl -> putCached(k, lvl));
             return dbResult;
         } catch (Exception e) {
             log.warn("Failed to query safesearch config from DB [guild={}, channel={}]: {}", guildId, safeChannelId, e.getMessage());
-            return Optional.ofNullable(cache.get(k));
+            return Optional.ofNullable(entry != null ? entry.level() : null);
         }
+    }
+
+    private void putCached(String key, int level) {
+        long now = System.currentTimeMillis();
+        if (cache.size() >= MAX_CACHE_SIZE) {
+            cache.entrySet().removeIf(e -> e.getValue().expiresAtMs() <= now);
+            if (cache.size() >= MAX_CACHE_SIZE) {
+                cache.clear();
+            }
+        }
+        cache.put(key, new CacheEntry(level, now + CACHE_TTL_MS));
     }
 
     @Override

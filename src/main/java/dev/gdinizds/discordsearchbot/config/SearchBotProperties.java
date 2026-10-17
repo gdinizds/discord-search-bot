@@ -36,7 +36,14 @@ public record SearchBotProperties(
             @DefaultValue("") String secretKey,
             @DefaultValue("garage") String region,
             @DefaultValue("search-bot") String keyPrefix
-    ) {}
+    ) {
+        @Override
+        public String toString() {
+            return "S3[endpoint=" + endpoint + ", bucket=" + bucket + ", accessKey=" + accessKey
+                    + ", secretKey=" + (secretKey != null && !secretKey.isBlank() ? "******" : "")
+                    + ", region=" + region + ", keyPrefix=" + keyPrefix + "]";
+        }
+    }
 
     public record Images(
             @DefaultValue("5s") Duration downloadTimeout,

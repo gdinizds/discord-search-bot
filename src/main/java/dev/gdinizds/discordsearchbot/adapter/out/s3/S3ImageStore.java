@@ -33,12 +33,14 @@ public class S3ImageStore implements ImageStoragePort {
         this.keyPrefix = keyPrefix;
     }
 
+    private static final java.util.regex.Pattern SAFE_ID_PATTERN = java.util.regex.Pattern.compile("^[a-zA-Z0-9_-]{1,64}$");
+
     @Override
     public String storeImage(String guildId, String correlationId, String imageUrl, String fallbackTitle) {
         try {
             SafeImageDownloader.DownloadedImage downloaded = downloader.download(imageUrl);
-            String safeGuild = (guildId == null || guildId.isBlank()) ? "global" : guildId;
-            String safeCorr = (correlationId == null || correlationId.isBlank()) ? UUID.randomUUID().toString() : correlationId;
+            String safeGuild = (guildId != null && SAFE_ID_PATTERN.matcher(guildId.trim()).matches()) ? guildId.trim() : "global";
+            String safeCorr = (correlationId != null && SAFE_ID_PATTERN.matcher(correlationId.trim()).matches()) ? correlationId.trim() : UUID.randomUUID().toString();
             String filename = "img-" + UUID.randomUUID().toString().substring(0, 8) + "." + downloaded.format().extension();
             String key = keyPrefix + "/" + safeGuild + "/" + safeCorr + "/" + filename;
 
