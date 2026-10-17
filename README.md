@@ -209,7 +209,9 @@ src/
 │   └── resources/
 │       ├── application.yaml
 │       └── db/migration/
-│           └── V1__init_schema.sql
+│           ├── V1__init_schema.sql
+│           ├── V2__safesearch_config.sql
+│           └── V3__partition_audit_log_and_cleanup_indexes.sql
 └── test/
     └── java/dev/gdinizds/discordsearchbot/
         ├── ArchitectureTest.java             # ArchUnit validando fronteiras hexagonais
@@ -274,26 +276,67 @@ A resposta do bot é estruturada para oferecer máxima usabilidade visual e func
 
 ---
 
-## 🛡️ Proteção Anti-SSRF e Armazenamento S3
+## 🛡️ Proteção Anti-SSRF, Hardening S3 e Virtual Threads
 
-O módulo `SafeImageDownloader` implementa proteção contra requisições fraudulentas do servidor (SSRF):
+O módulo `SafeImageDownloader` e o adaptador `S3ImageStore` implementam proteção em profundidade:
 
-1. **Validação de Rede Pré-Conexão:** Bloqueia resolução DNS para faixas privadas, loopback (`127.0.0.1`, `::1`), link-local (`169.254.0.0/16`), metadados de nuvem e redes corporativas locais.
-2. **Restrição Estrita de Portas:** Permite apenas portas seguras (`80` e `443`).
-3. **Controle de Redirecionamentos:** Limite de 3 hops com revalidação de IP a cada salto.
-4. **Inspeção de Magic Bytes:** Valida o cabeçalho binário real dos bytes trafegados (PNG, JPEG, GIF, WEBP), descartando extensões mascaradas.
-5. **Streaming Limitado:** Impede estouro de memória com corte estrito de bytes recebidos (máximo de 10MB).
-6. **Upload S3:** A imagem validada é salva com chave única no Garage S3 e disponibilizada via endpoint de alta disponibilidade.
+1. **Validação de Rede Pré-Conexão e Proteção Anti-SSRF:**
+   - Bloqueio estrito de resolução DNS para faixas privadas IPv4 (RFC 1918 `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), CGNAT (`100.64.0.0/10`), link-local (`169.254.0.0/16`) e loopback (`127.0.0.0/8`).
+   - Bloqueio completo de evasões via IPv6 e IPv4-mapped/compatible (`::1`, `::ffff:127.0.0.1`, `::127.0.0.1`, `::ffff:169.254.169.254`, `::169.254.169.254`, faixas ULA `fc00::/7` e link-local `fe80::/10`).
+   - Bloqueio de domínios internos de infraestrutura (`.consul`, `.cluster.local`, `localhost`).
+2. **Restrição Estrita de Portas e Redirecionamentos:**
+   - Permite apenas portas seguras (`80` e `443`).
+   - Limite de 3 saltos HTTP com revalidação completa de IP e política de rede no cabeçalho `Location` a cada redirect.
+3. **Inspeção de Magic Bytes e Limitação de Stream:**
+   - Validação binária estrita dos magic bytes reais (PNG, JPEG, GIF, WEBP) descartando arquivos maliciosos ou disfarçados.
+   - Streaming com corte estrito no `InputStream` (máximo de 10MB) prevenindo esgotamento de memória e DoS.
+4. **Armazenamento S3 Seguro (Garage S3):**
+   - Sanitização de S3 Object Keys com regex estrita `^[a-zA-Z0-9_.-]+$` contra ataques de **Path Traversal**.
+   - Integração com `UrlConnectionHttpClient` no AWS S3 SDK, eliminando o problema de **Thread Pinning** sob Virtual Threads do Java 25 (presente no cliente Apache HTTP).
 
 ---
 
-## 📊 Persistência e Tabela de Auditoria (PostgreSQL)
+## 📊 Persistência, Particionamento e Governança de Dados (PostgreSQL)
 
-O schema `search_bot` é versionado via **Flyway** e armazena o histórico completo com índices otimizados para relatórios e observabilidade:
+O schema `search_bot` é versionado via **Flyway** e adota particionamento temporal nativo e expurgo automatizado no PostgreSQL:
 
 ```sql
-CREATE TABLE search_bot.search_audit_log (
+-- Configuração de SafeSearch por Guild/Canal
+CREATE TABLE search_bot.safesearch_config (
     id BIGSERIAL PRIMARY KEY,
+    guild_id VARCHAR(64) NOT NULL,
+    channel_id VARCHAR(64) NOT NULL DEFAULT '',
+    level INT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_safesearch_scope UNIQUE (guild_id, channel_id)
+);
+
+-- Sessões interativas dos botões (otimizada com fillfactor 85 para HOT updates)
+CREATE TABLE search_bot.search_sessions (
+    id VARCHAR(64) PRIMARY KEY,
+    correlation_id VARCHAR(128) NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
+    guild_id VARCHAR(64),
+    channel_id VARCHAR(64),
+    message_id VARCHAR(64),
+    interaction_token VARCHAR(256),
+    query TEXT NOT NULL,
+    search_type VARCHAR(32) NOT NULL,
+    current_index INT NOT NULL DEFAULT 0,
+    total_results INT NOT NULL,
+    results_json JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL
+) WITH (fillfactor = 85);
+
+CREATE INDEX idx_sessions_expires_at ON search_bot.search_sessions (expires_at);
+CREATE INDEX idx_sessions_user_id ON search_bot.search_sessions (user_id);
+CREATE INDEX idx_sessions_correlation_id ON search_bot.search_sessions (correlation_id);
+
+-- Tabela de auditoria particionada por range de data (pg_partman)
+CREATE TABLE search_bot.search_audit_log (
+    id BIGINT GENERATED ALWAYS AS IDENTITY,
     correlation_id VARCHAR(128) NOT NULL,
     guild_id VARCHAR(64),
     channel_id VARCHAR(64),
@@ -308,17 +351,52 @@ CREATE TABLE search_bot.search_audit_log (
     status VARCHAR(32) NOT NULL,
     error_message TEXT,
     execution_time_ms BIGINT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
 
 CREATE INDEX idx_audit_correlation_id ON search_bot.search_audit_log (correlation_id);
 CREATE INDEX idx_audit_user_id ON search_bot.search_audit_log (user_id);
 CREATE INDEX idx_audit_guild_id ON search_bot.search_audit_log (guild_id);
 CREATE INDEX idx_audit_created_at ON search_bot.search_audit_log (created_at DESC);
-CREATE INDEX idx_audit_event_type ON search_bot.search_audit_log (event_type);
 ```
 
-As sessões interativas dos botões são persistidas na tabela `search_bot.search_sessions` com índice de expiração (`expires_at`), garantindo que o usuário consiga navegar pelas pesquisas mesmo se houver reinicialização de pods ou escala horizontal de réplicas.
+### Automação de Banco de Dados com `pg_partman` e `pg_cron`
+
+Em conformidade com as melhores práticas de banco de dados, **nenhuma deleção periódica ou manutenção de partições roda via código Java / Spring `@Scheduled`**. Todas as rotinas são executadas pelo PostgreSQL via `pg_cron` no banco central `app`:
+
+1. **Particionamento Diário e Retenção (`pg_partman`):**
+   - Tabela particionada diariamente com `premake = 3` e retenção estrita de **30 dias**.
+   - Job `partman-maintenance-discord-search-bot` agendado no `pg_cron` a cada hora (`40 * * * *`):
+     ```sql
+     SELECT cron.schedule_in_database('partman-maintenance-discord-search-bot', '40 * * * *', 'SELECT partman.run_maintenance(p_analyze := FALSE)', 'discord_search_bot', 'postgres');
+     ```
+2. **Expurgo Automático de Sessões Expiradas:**
+   - Job `purge-search-sessions` agendado no `pg_cron` a cada 15 minutos (`*/15 * * * *`):
+     ```sql
+     SELECT cron.schedule_in_database('purge-search-sessions', '*/15 * * * *', 'DELETE FROM search_bot.search_sessions WHERE expires_at < CURRENT_TIMESTAMP', 'discord_search_bot', 'postgres');
+     ```
+3. **HOT (Heap-Only Tuples) Updates:**
+   - `search_sessions` configurada com `fillfactor = 85`, permitindo atualizações in-place na navegação de índices (`current_index`, `updated_at`) sem gerar bloat.
+   - Remoção de índices redundantes (`idx_safesearch_scope` coberto por `uk_safesearch_scope` e `idx_audit_event_type` de baixa cardinalidade).
+
+---
+
+## 📨 Mensageria de Alta Performance (Redpanda / Kafka)
+
+O consumo e produção de eventos foi ajustado para máxima vazão e tolerância a falhas sobre o cluster Redpanda de 3 nós:
+
+- **Concorrência Alinhada (3 Partições):**
+  - Listener configurado com `concurrency = 3`, garantindo 1 consumidor dedicado por partição do tópico sem contenção.
+  - Rebalanceamento não-destrutivo com `CooperativeStickyAssignor`.
+- **Confirmação Manual de Offset (`MANUAL_IMMEDIATE`):**
+  - Integração com `Acknowledgment` nos listeners acoplada ao ciclo de vida das Virtual Threads. O commit do offset só ocorre após o término do processamento com sucesso ou descarte explícito.
+- **Isolamento de Poison Pills (Dead Letter Topic):**
+  - Integração do `DeadLetterPublishingRecoverer` publicando mensagens irrecuperáveis no tópico correspondente `.DLT`.
+  - `DefaultErrorHandler` com `FixedBackOff(1000L, 2)` para retentativas imediatas antes de encaminhar ao DLT.
+- **Otimização de Throughput do Producer:**
+  - `enable.idempotence = true` para garantia estrita de entrega exactly-once sem duplicações.
+  - Compressão `lz4`, `linger.ms = 5` e `batch.size = 32768` para agregação de batch de alto rendimento.
 
 ---
 
@@ -364,10 +442,15 @@ Benefícios da execução nativa:
 O ciclo de vida no cluster é gerenciado através do repositório GitOps [fleet-infra](https://github.com/gdinizds/fleet-infra.git):
 
 - **Injeção de Segredos pelo HashiCorp Vault:**
-  - Banco de Dados: `secret/discord-search-bot/db`
-  - Armazenamento S3: `secret/discord-search-bot/s3`
+  - Banco de Dados: `secret/discord-search-bot/db` (injetado em `/vault/secrets/db.yaml`).
+  - Armazenamento S3: `secret/discord-search-bot/s3` (injetado em `/vault/secrets/s3.yaml`).
 - **Configurações Centralizadas no Consul:**
   - Carregadas automaticamente via Spring Cloud Consul Config em `consul-server.consul.svc.cluster.local:8500`.
+- **Hardening de Segurança e Isolamento:**
+  - Sistema de arquivos somente leitura: `readOnlyRootFilesystem: true`.
+  - Execução não-root com UID dedicado (`runAsUser: 1001`), `allowPrivilegeEscalation: false` e drop total de capabilities (`drop: ["ALL"]`).
+  - Restrição do Spring Boot Actuator (`show-details: never`).
+  - Isolamento de rede estrito via `NetworkPolicy` dedicada no namespace `discord-search-bot`.
 - **Image Update Automation do Flux:**
   - A cada nova tag gerada no GitHub (`v*.*.*`), o GitHub Actions constrói a imagem no GHCR e o Flux aplica a atualização no cluster via RollingUpdate.
 
