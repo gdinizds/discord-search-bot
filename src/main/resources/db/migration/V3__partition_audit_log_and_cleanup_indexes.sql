@@ -37,10 +37,19 @@ CREATE TABLE search_bot.search_audit_log (
     execution_time_ms BIGINT,
     created_at        TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at)
-) PARTITION BY RANGE (created_at)
-WITH (fillfactor = 90);
+) PARTITION BY RANGE (created_at);
 
--- Migrate existing rows if any
+-- Create partition hierarchy starting from earliest historical record
+SELECT partman.create_parent(
+    p_parent_table    => 'search_bot.search_audit_log',
+    p_control         => 'created_at',
+    p_interval        => '1 day',
+    p_start_partition => '2026-10-14',
+    p_premake         => 3,
+    p_default_table   => true
+);
+
+-- Migrate existing rows into partitioned hierarchy
 INSERT INTO search_bot.search_audit_log (
     id, correlation_id, guild_id, channel_id, user_id, username,
     event_type, command_name, query, search_type,
@@ -72,13 +81,7 @@ CREATE INDEX idx_audit_guild_id
 CREATE INDEX idx_audit_created_at
     ON search_bot.search_audit_log (created_at DESC);
 
--- Configure pg_partman daily partitioning with 30-day retention
-SELECT partman.create_parent(
-    p_parent_table => 'search_bot.search_audit_log',
-    p_control      => 'created_at',
-    p_interval     => '1 day',
-    p_premake      => 3);
-
+-- Configure pg_partman retention to 30 days
 UPDATE partman.part_config
    SET retention = '30 days',
        retention_keep_table = false,
