@@ -30,11 +30,16 @@ spring:
 
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:redpanda.redpanda.svc.cluster.local:9093}
+    listener:
+      concurrency: 3
     consumer:
       group-id: discord-search-bot
       auto-offset-reset: latest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+        max.poll.interval.ms: 60000
     producer:
       acks: all
       compression-type: lz4
@@ -42,6 +47,8 @@ spring:
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
         enable.idempotence: true
+        linger.ms: 5
+        batch.size: 32768
 
 search-bot:
   topics:

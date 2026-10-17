@@ -12,6 +12,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import tools.jackson.databind.ObjectMapper;
@@ -59,39 +60,65 @@ public class InboundEventConsumer implements DisposableBean {
 
     @KafkaListener(topics = "${search-bot.topics.inbound-interactions}", containerFactory = "kafkaListenerContainerFactory")
     public void onInteractionCommand(@Payload String payload,
-                                     @Header(name = "command-name", required = false) String commandName) {
-        if (!"pesquisar".equals(commandName)) return;
-        parse(payload).ifPresent(event -> {
+                                     @Header(name = "command-name", required = false) String commandName,
+                                     Acknowledgment ack) {
+        if (!"pesquisar".equals(commandName)) {
+            ackIfPresent(ack);
+            return;
+        }
+        parse(payload).ifPresentOrElse(event -> {
             SearchCommand command = mapper.fromSlash(event, payload);
-            dispatch(() -> withMdc(command.correlationId(), command.guildId(), "SLASH", () -> searchUseCase.execute(command)));
-        });
+            dispatch(() -> withMdc(command.correlationId(), command.guildId(), "SLASH", () -> searchUseCase.execute(command)), ack);
+        }, () -> ackIfPresent(ack));
+    }
+
+    public void onInteractionCommand(String payload, String commandName) {
+        onInteractionCommand(payload, commandName, null);
     }
 
     @KafkaListener(topics = "${search-bot.topics.inbound-commands}", containerFactory = "kafkaListenerContainerFactory")
     public void onMessageCommand(@Payload String payload,
-                                 @Header(name = "command-name", required = false) String commandName) {
-        if (!"pesquisar".equals(commandName)) return;
-        parse(payload).ifPresent(event -> {
+                                 @Header(name = "command-name", required = false) String commandName,
+                                 Acknowledgment ack) {
+        if (!"pesquisar".equals(commandName)) {
+            ackIfPresent(ack);
+            return;
+        }
+        parse(payload).ifPresentOrElse(event -> {
             SearchCommand command = mapper.fromDotCommand(event, payload);
-            dispatch(() -> withMdc(command.correlationId(), command.guildId(), "DOT", () -> searchUseCase.execute(command)));
-        });
+            dispatch(() -> withMdc(command.correlationId(), command.guildId(), "DOT", () -> searchUseCase.execute(command)), ack);
+        }, () -> ackIfPresent(ack));
+    }
+
+    public void onMessageCommand(String payload, String commandName) {
+        onMessageCommand(payload, commandName, null);
     }
 
     @KafkaListener(topics = "${search-bot.topics.inbound-buttons}", containerFactory = "kafkaListenerContainerFactory")
-    public void onButtonInteraction(@Payload String payload) {
-        parse(payload).ifPresent(event -> {
-            if (event.rawPayload() == null) return;
+    public void onButtonInteraction(@Payload String payload, Acknowledgment ack) {
+        parse(payload).ifPresentOrElse(event -> {
+            if (event.rawPayload() == null) {
+                ackIfPresent(ack);
+                return;
+            }
             String compId = event.rawPayload().path("componentId").asString("");
             if (compId.isBlank()) compId = event.rawPayload().path("custom_id").asString("");
-            if (!compId.startsWith("search:")) return;
+            if (!compId.startsWith("search:")) {
+                ackIfPresent(ack);
+                return;
+            }
 
             NavigationCommand command = mapper.fromButton(event, payload);
-            dispatch(() -> withMdc(command.correlationId(), command.guildId(), "BUTTON", () -> navigateUseCase.navigate(command)));
-        });
+            dispatch(() -> withMdc(command.correlationId(), command.guildId(), "BUTTON", () -> navigateUseCase.navigate(command)), ack);
+        }, () -> ackIfPresent(ack));
+    }
+
+    public void onButtonInteraction(String payload) {
+        onButtonInteraction(payload, null);
     }
 
     @KafkaListener(topics = "${search-bot.topics.inbound-config-updated}", containerFactory = "kafkaListenerContainerFactory")
-    public void onConfigUpdated(@Payload String payload) {
+    public void onConfigUpdated(@Payload String payload, Acknowledgment ack) {
         try {
             tools.jackson.databind.JsonNode root = objectMapper.readTree(payload);
             String eventType = root.path("eventType").asString("");
@@ -116,19 +143,30 @@ public class InboundEventConsumer implements DisposableBean {
             log.info("Updated SafeSearch configuration [guild={}, channel={}, level={}]", guildId, channelId, level);
         } catch (Exception e) {
             log.warn("Failed to process config updated event: {}", e.getMessage());
+        } finally {
+            ackIfPresent(ack);
         }
     }
 
-    private void dispatch(Runnable task) {
+    public void onConfigUpdated(String payload) {
+        onConfigUpdated(payload, null);
+    }
+
+    private void dispatch(Runnable task, Acknowledgment ack) {
         if (!bulkhead.tryAcquirePermission()) {
             log.warn("Bulkhead rejected search request due to high load");
+            ackIfPresent(ack);
             return;
         }
         submit(() -> {
             try {
                 task.run();
             } finally {
-                bulkhead.onComplete();
+                try {
+                    bulkhead.onComplete();
+                } finally {
+                    ackIfPresent(ack);
+                }
             }
         });
     }
@@ -153,6 +191,16 @@ public class InboundEventConsumer implements DisposableBean {
         if (inFlight.decrementAndGet() == 0) {
             synchronized (drained) {
                 drained.notifyAll();
+            }
+        }
+    }
+
+    private static void ackIfPresent(Acknowledgment ack) {
+        if (ack != null) {
+            try {
+                ack.acknowledge();
+            } catch (Exception e) {
+                log.warn("Failed to commit Kafka offset: {}", e.getMessage());
             }
         }
     }
